@@ -224,6 +224,45 @@ void cpu_x86_update_cr4(CPUX86State *env, uint32_t new_cr4)
 }
 
 #if !defined(CONFIG_USER_ONLY)
+static hwaddr x86_cpu_walk_vmx_ept(CPUState *cs, vaddr addr)
+{
+    X86CPU *cpu = X86_CPU(cs);
+    CPUX86State *env = &cpu->env;
+
+    size_t addr_pml4 = (addr & 0x0000ff8000000000) >> 39;
+    size_t addr_pdpt = (addr & 0x0000007fc0000000) >> 30;
+    size_t addr_pd = (addr & 0x000000003fe00000) >> 21;
+    size_t addr_pt = (addr & 0x00000000001ff000) >> 12;
+    size_t addr_offset = (addr & 0x0000000000000fff) >> 0;
+
+    uint64_t eptp = *((uint64_t*)&env->nested_state->data.vmx->vmcs12[120]) & TARGET_PAGE_MASK;
+
+    uint64_t pml4e = x86_ldq_phys(cs, eptp + addr_pml4 * 8);
+    if (!(pml4e & 1)) {
+        return -1;
+    }
+
+    uint64_t pdpte = x86_ldq_phys(cs, (pml4e & 0x000ffffffffff000) + addr_pdpt * 8);
+    if (!(pdpte & 1)) {
+        return -1;
+    } else if (pdpte & 0x80) {
+        return (pdpte & 0x000fffffc0000000) | (addr & 0x000000003fffffff);
+    }
+
+    uint64_t pde = x86_ldq_phys(cs, (pdpte & 0x000ffffffffff000) + addr_pd * 8);
+    if (!(pde & 1)) {
+        return -1;
+    } else if (pde & 0x80) {
+        return (pde & 0x000fffffffe00000) | (addr & 0x00000000001fffff);
+    }
+
+    uint64_t pte = x86_ldq_phys(cs, (pde & 0x000ffffffffff000) + addr_pt * 8);
+    if (!(pte & 1)) {
+        return -1;
+    }
+    return (pte & 0x000ffffffffff000) | addr_offset;
+}
+
 hwaddr x86_cpu_get_phys_page_attrs_debug(CPUState *cs, vaddr addr,
                                          MemTxAttrs *attrs)
 {
@@ -236,6 +275,12 @@ hwaddr x86_cpu_get_phys_page_attrs_debug(CPUState *cs, vaddr addr,
     int page_size;
 
     *attrs = cpu_get_mem_attrs(env);
+
+    if (env->nested_state != NULL &&
+        env->nested_state->flags & KVM_STATE_NESTED_GUEST_MODE) {
+        // TODO : Walk guest page table
+        return x86_cpu_walk_vmx_ept(cs, addr);
+    }
 
     a20_mask = x86_get_a20_mask(env);
     if (!(env->cr[0] & CR0_PG_MASK)) {
