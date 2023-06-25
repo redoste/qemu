@@ -23,6 +23,7 @@
 #ifndef CONFIG_USER_ONLY
 #include "hw/i386/apic_internal.h"
 #endif
+#include <linux/kvm.h>
 
 /***********************************************************/
 /* x86 debug */
@@ -563,5 +564,13 @@ void x86_cpu_dump_state(CPUState *cs, FILE *f, int flags)
                          i == offs ? "<" : "", codestr, i == offs ? ">" : "");
         }
         qemu_fprintf(f, "\n");
+    }
+
+    if (env->nested_state != NULL) {
+        qemu_fprintf(f, "VMXON region = %016llx\n", env->nested_state->hdr.vmx.vmxon_pa);
+        qemu_fprintf(f, "VMCS region  = %016llx\n", env->nested_state->hdr.vmx.vmcs12_pa);
+        qemu_fprintf(f, "VMCS eptp    = %016lx\n", *((uint64_t*)&env->nested_state->data.vmx->vmcs12[120]));
+        qemu_fprintf(f, "Nested flags = %08hhx [%s]\n", env->nested_state->flags,
+                     env->nested_state->flags & KVM_STATE_NESTED_GUEST_MODE ? "GUEST" : "ROOT");
     }
 }
